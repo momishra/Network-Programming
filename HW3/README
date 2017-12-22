@@ -1,0 +1,134 @@
+Goal
+For this assignment you will be developing an application that uses raw IP sockets to ‘walk’ around an ordered list of nodes (given as a command line argument at the ‘source’ node, which is the node at which the tour was initiated), in a manner similar to the IP SSRR (Strict Source and Record Route) option. At each node, the application pings the preceding node in the tour. However, unlike the ping code in Stevens, you will be sending the ping ICMP echo request messages through a SOCK_RAW-type PF_PACKET socket and implementing ARP functionality to find the Ethernet address of the target node.  Your code will consist of two process modules, a ‘Tour’ application module (which will implement all the functionality outlined above, except for ARP activity) and an ARP module. Once the tour application has completed the node “walk”, the final node will broadcast a message to all nodes terminating the pings.
+
+You may implement this assignment in C or Python (only base python libraries, no add-ons). 
+Note: If you choose to use Python for this assignment, your code is publically viewable when you are testing on the VM machines, and you will need to write/modify  scripts to test on the VMs.  It is imperative you delete your files from the VMs when you are done testing. We will be checking for cheating/copying of code! Do not leave yourself vulnerable. 
+
+Tour Application
+bin/netid_tour - Application which runs on EVERY node in the ‘network’.  (NOTE: replace ‘netid’ with YOUR netid)
+Arguments
+When evoking the application on the non-source node, the application is run without any command-line arguments.
+
+[root@vm3/root]# netid_tour
+
+When evoking the application on the source node, the user supplies a sequence of vm node names (not IP addresses) to be visited in order. This command line sequence starts with the next node to be visited from the source node (i.e., it does not start with the source node itself). The sequence can include any number of repeated visits to the same node. For example, suppose that the source node is vm3:
+
+[root@vm3/root]# netid_tour vm2 vm10 vm4 vm7 vm5 vm2 vm6 vm2 vm9 vm4 vm7 vm2 vm6 vm5 vm1 vm10 vm8
+
+A tour does not necessarily have to visit every vm node in the network
+The same node should not appear consecutively in the tour list – i.e., the next node on the tour cannot be the current node itself).
+Tour Behavior
+Create a set of sockets
+two IP raw sockets: ‘rt ’ (‘route traversal’) ‘pg ’ (‘ping’) socket
+The rt socket will receive tour packets
+must have the IP_HDRINCL option set and have a protocol value set to your assigned value. These are non-overlapping with standard protocols, IPPROTO_XXXX values in  /usr/include/netinet/in.h
+The pg socket will receive ping packets 
+must have protocol value IPPROTO_ICMP.
+A PF_PACKET socket
+Send ‘ping’ packets out
+Must be of type SOCK_RAW (not SOCK_DGRAM), and protocol value of  ETH_P_IP = 0x0800 (IPv4)
+UDP socket for broadcasting (or multicasting)
+Sending and receiving to start and stop ‘ping’
+Use your assigned port
+EC Only - You may need more than one socket depending on how you chose to bind for multicast communication - see bottom of  p. 576, Section 21.10
+When evoked with a set of arguments, the node is the source node. The source node does the following:
+The application turns the sequence into a list of IP addresses for source routing. It also adds the IP address of the source node itself to the beginning of the list. The list thus produced will be carried as the payload of an IP packet, not as a SSRR option in the packet header. It is our application which will ensure that every node in the sequence is visited in order, not the IP SSRR capability.
+EC Only - The source node should also add to the list an IP multicast address and assigned port number. It should also join the multicast group at that address and port number on its UDPsocket. The TTL for outgoing multicasts should be set to 1.
+The application then fills in the header of an IP packet, designating itself as the IP source, and the next node to be visited as the IP destination. The packet is sent out on the ‘rt’ socket. Note that on Linux, all the fields of the packet header must be in network byte order (Stevens, Section 28.3, p. 737, the fourth bullet point).
+When filling in the packet header, you should explicitly fill in the identification field with the value assigned to you (Recall that, with the IP_HDRINCL socket option, if the identification field is given value 0, then the kernel will set its value).
+When evoked on all non-source nodes. The node does the following:
+Listens on the ‘rt’ socket for packets. Check the  identification field of all packets. Ignore all packets which do not contain your assigned identification number.
+For valid packets, print out at that node: 
+<time> received source routing packet from <hostname>
+where <time> is the current time in human-readable format and <hostname> is the host name corresponding to the source IP address in the header of the received packet.
+EC Only -If this is the first time the node is visited, the application should use the multicast address and port number in the packet received to join the multicast group on its UDP socket. The TTL for outgoing multicasts should be set to 1.
+The application updates the list in the payload, so that the next node in the tour can easily identify what the next hop from itself will be when it receives the packet. 
+The application then fills in a new IP header, designating itself as the IP source, and the next node to be visited as the IP destination. The identification field should be set to the same value as in the received packet. The packet is sent out on the ‘rt’ socket.
+How you do this is up to you. For example, include as part of the payload a pointer field into the list of nodes to be visited. This pointer would then be updated to the next entry in the list as the packet progresses hop by hop (see Figure 27.1 and the associated explanation on  pp. 711-712). Other solutions are, of course, possible. 
+The node should also initiate pinging to the preceding node in the tour (the IP address of which it should pick up from the header of the received packet) - on the FIRST visit only. We will use the Stevens ping code with modifications. You will be using the SOCK_RAW-type PF_PACKET socket you created to send the ICMP echo request messages.
+Before it can send echo request messages, the application has to call on the ARP module you will implement to get the Ethernet address of this preceding / ‘target’ node; this call is made using the API function areq which you will also implement (see sections ARP module specifications & API specifications below). Note that ARP has to be evoked every time the application wants to send out an echo request message, and not just the first time.
+An echo request message has to be encapsulated in a properly-formulated IP packet, which is in turn encapsulated in a properly-formulated Ethernet frame transmitted out through the PF_PACKET socket ;  otherwise, ICMP at the source node will not receive it. You will have to modify Stevens’ ping code accordingly, specifically, the send_v4 function. In particular, the Ethernet frame must have a value of  ETH_P_IP = 0x0800 (IPv4 – see <linux/if_ether.h>) in the frame type / ‘length’ field ;  and the encapsulated IP packet must have a value of  IPPROTO_ICMP = 0x01 (ICMPv4 – see <netinet_in.h>) in its protocol field.
+You should also simplify the ping code in its entirety by stripping all the ‘indirection’ IPv4 / IPv6 dual-operability paraphernalia and making the code work just for IPv4. Also note that the functions host_serv and freeaddrinfo, together with the associated structure addrinfo (see Sections 11.6, 11.8 & 11.11), in Figures 27.3, 27.6 & 28.5 ( pp. 713, 716 & 744f., respectively) can be replaced by the function gethostbyname and associated structure hostent (see Section 11.3) where needed. Also, there is no ‘-v’ verbose option, so this too should be stripped from Stevens’ code.
+When a node is ready to start pinging, it first prints out a ‘PING’ message similar to lines 32-33 of Figure 28.5,  p. 744. It then builds up ICMP echo request messages and sends them to the preceding node every 1 second through the PF_PACKET socket. It also reads incoming echo response messages off the ‘pg’ socket, in response to which it prints out the same kind of output as the code of Figure 28.8,  p. 748.
+Once a node initiates pinging, it needs to read from both its ‘rt’ and ‘pg’ sockets (and UPD for EC), necessitating the use of the select/poll/epoll function. 
+If the node is the last node on the tour,  and if this is the first time it is visited, it starts pinging the preceding node (if it is not already doing so). 
+EC only - The node also joins the multicast group
+After 5 seconds, the last node, broadcasts the following message to all nodes in the network signifying the tour has ended.  
+<<<<< This is node vmX. Tour has ended. >>>>>
+The last node should also print this message out on stdout preceded, on the same line, by the phrase:
+Node vmX, sending: Tour has ended.
+where vmX is the name (not IP address) of the node. 
+Upon receiving this broadcast message
+The node prints to stdout, where vmY is the current node:
+Node vmY, received: <then print out the message received>. 
+The node immediately stops its pinging activity and resumes waiting for incoming ‘rt’ packets.
+
+Multicast EC only - After 5  echo replies are received from the preceding node, the last node on the tour sends out a multicast message on its UDP socket (i.e., the node should wait about five seconds before sending the multicast message) :
+<<<<< This is node vmX. Tour has ended. Group members ID yourself. >>>>>
+where vmX is the name (not IP address) of the node. The last node should also print this message out on stdout preceded, on the same line, by the phrase:
+Node vmX, sending: <then print out the message sent>.
+Each node vmY receiving this message should print to stdout the message received preceded, on the same line, by the phrase:
+Node vmY, received: <then print out the message received>.
+Once this message is received, the node immediately stops its pinging activity and resumes waiting for incoming ‘rt’ packets.
+The node then sends out the following multicast message:
+<<<<< Node vmY. I am a member of the group. >>>>>
+and print out this message preceded, on the same line, by the phrase:
+Node vmY, sending: <then print out the message sent>.
+Each node receiving these second multicast messages (i.e., the messages that nodes – including itself – <<<<< Node vmY. I am a member of the group. >>>>>) should print each such message out preceded, on the same line, by the phrase:
+Node vmY, received: <then print out the message received>.
+Reading from the socket must be implemented with a 5-second timeout. When the timeout expires, the node should print out another message to the effect that it is terminating the Tour application, and gracefully exit its Tour process.
+Note that under Multicast specifications, the last node in the tour, which sends out the End of Tour message, should itself receive a copy of that message and, when it does, it should behave exactly as do the other nodes in steps above.
+
+
+ARP module
+bin/netid_arp - Application which runs on EVERY node in the ‘network’.  (NOTE: replace ‘netid’ with YOUR netid)
+Arguments
+The ARP module takes no command line arguments.
+ARP Helper functions - modify as needed
+There are two functions provided on minix in /home/course/cse533/HW3_code
+get_hw_addrs
+Analogous to get_ifi_info_plus
+use ioctl to get the (primary) IP address, alias IP addresses (if any), HW address, and interface name and index value for each of the node's interfaces (including the loopback interface lo)
+prhwaddrs
+Analogous to prifinfo_plus
+prhwaddrs prints that information out
+Note: if an interface has no HW address associated with it (this is, typically, the case for the loopback interface lo for example), then ioctl returns get_hw_addrs a HWaddress which is the equivalent of 00:00:00:00:00:00 .  get_hw_addrs stores this in the appropriate field of its data structures as it would with any HW address returned by ioctl, but when prhwaddrs comes across such an address, it prints a blank line instead of its usual ‘HWaddr = xx:xx:xx:xx:xx:xx’.
+ARP Behavior
+ARP will need to use  get_hw_addrs function to explore its node’s interfaces and build a set of  <IP address , HW address>  matching pairs for all eth0 interface IP addresses (including alias IP addresses, if any).
+Write out to stdout in some appropriately clear format the address pairs found.
+
+
+The module creates two sockets: 
+a PF_PACKET socket
+Send out ARP requests and requests
+The PF_PACKET should be of type SOCK_RAW (not type SOCK_DGRAM) with PF protocol value assigned.  Because this protocol value will be carried in the frame type / ‘length’ field of the Ethernet frame header (see Figure 4.3 of the ARP & RARP handout), the value chosen should be not less than 1536 (0x600) so that it is not misinterpreted as the length of an Ethernet 802.3 frame.
+a Unix domain socket
+Communicating with ‘tour’
+The Unix domain socket should be of type SOCK_STREAM (not SOCK_DGRAM). It is a listening socket bound to a ‘well-known’ some_path file (to be defined by you). This socket will be used to communicate with the function areq that is implemented in the Tour module (see the section API specifications below). In this context, areq will act as the client and the ARP module as the server.
+The ARP module then sits in an infinite loop, monitoring these two sockets.
+As ARP request messages arrive on the PF_PACKET socket, the module processes them, and responds with ARP reply messages as appropriate.
+The protocol builds a ‘cache’ of matching  <IP address , HW address>  pairs from the replies (and requests – see below) it receives. For simplicity, and unlike the real ARP, we shall not implement timing out mechanisms for these cache entries.
+A cache entry has five parts: (i) IP address ;  (ii) HW address ;  (iii) sll_ifindex (the interface to be used for reaching the matching pair <(i) , (ii)>) ;  (iv) sll_hatype ;  and (v) a Unix-domain connection-socket descriptor for a connected client (see the section API specifications below for the latter three). When an ARP reply is being entered in the cache, the ARP module uses the socket descriptor in (v) to send a reply to the client, closes the connection socket, and deletes the socket descriptor from the cache entry.
+Note that, like the real ARP, when an ARP request is received by a node, and if the request pertains to that receiving node, the sender’s (see Figure 4.3 of the ARP & RARP handout) <IP address, HWaddress> matching pair should be entered into the cache if it is not already there (together, of course, with (iii) sll_ifindex &  (iv) sll_hatype), or updated if need be if such an entry already exists in the cache.
+If the ARP request received does not pertain to the node receiving it, but there is already an entry in that receiving node's cache for the sender’s <IP address, HW address> matching pair, that entry should be checked and updated if need be. If there is no such entry, no action is taken (in particular, and unlike the case above, no new entry should be made in the receiving node's cache of the sender’s <IP address, HW address> matching pair if such an entry does not already exist).
+
+ARP request and reply messages have the same format as Figure 4.3 of the ARP & RARP handout, but with an extra 2-byte identification field added at the beginning which you fill with a value chosen so that it has a high probability of being unique to yourself. This value is to be echoed in the reply message, and helps to act as a further filter in case some other student happens to have fortuitously chosen the same value as yourself for the protocol parameter of the ARP PF_PACKET.(See Piazza @89 for why this was removed) Values in the fields of our ARP messages must be in network byte order. You might find the system header file <linux/if_arp.h> useful for manipulating ARP request and reply messages, but remember that our version of these messages have an extra two-byte field as mentioned above.
+
+Your code should print out on stdout, in some appropriately clear format, the contents of the Ethernet frame header and ARP request message you send. As described in Section 4.4 of the ARP & RARP handout, the node that responds to the request should, in its reply message, swap the two sender addresses with the two target addresses, as well as, of course, echo back the extra identification field sent with the request. The protocol at this responding node should print out, in an appropriately clear format, both the request frame (header and ARP message) it receives and the reply frame it sends. Similarly, the node that sent the request should print out the reply frame it receives. Finally, recall that the node issuing the request sends out a broadcast Ethernet frame, but the responding node replies with a unicast frame.
+
+API specification
+The API is for communication between the Tour process and the ARP process. It consists of a single function, areq, implemented in the Tour module. areq is called by send_v4 function (from the  ‘ping’ code) of the application every time the latter want to send out an ICMP echo request message:
+int areq (struct sockaddr *IPaddr, socklen_t sockaddrlen, struct hwaddr *HWaddr);
+IPaddr contains the primary or alias IP address of a ‘target’ node on the LAN for which the corresponding hardware address is being requested.
+hwaddr is a new structure (and not a pre-existing type) modeled on the sockaddr_ll of PF_PACKET; you will have to declare it in your code. It is used to return the requested hardware address to the caller of areq:
+structure hwaddr {
+     int             	        sll_ifindex;	 /* Interface number */
+     unsigned short  sll_hatype;	 /* Hardware type */
+     unsigned char   sll_halen; 	/* Length of address */
+     unsigned char   sll_addr[8];	 /* Physical layer address */
+};
+
+
+areq creates a Unix domain socket of type SOCK_STREAM and connects to the ‘well-known’ some_path file of the ARP listening socket. It sends the IP address from parameter IPaddr and the information in the three fields of parameter HWaddr to ARP. It then blocks on a read awaiting a reply from ARP. This read should be backed up by a timeout since it is possible that no reply is received for the request. If a timeout occurs, areq should close the socket and return to its caller indicating failure (through its int return value).
+Your application code should print out on stdout, in some appropriately clear format, a notification every time areq is called, giving the IP address for which a HW address is being sought. It should similarly print out the result when the call to areq returns (HW address returned, or failure).
+When the ARP module receives a request for a HW address from areq through its Unix domain listening socket, it first checks if the required HW address is already in the cache. If so, it can respond immediately to the areq and close the Unix domain connection socket.  Otherwise, it makes an ‘incomplete’ entry in the cache, consisting of parts (i), (iii), (iv) and (v) ;  puts out an ARP request message on the network on its PF_PACKET socket; and starts monitoring the areq connection socket for readability  –  if the areq client closes the connection socket (this would occur in response to a timeout in areq), ARP deletes the corresponding incomplete entry from the cache (and ignores any subsequent ARP reply from the network if such is received). On the other hand, if ARP receives a reply from the network, it updates the incomplete cache entry, responds to areq, and closes the connection socket.
